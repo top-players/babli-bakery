@@ -12,16 +12,33 @@ export default function AdminLoginPage() {
   const [showPass, setShowPass] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+    const timeout = setTimeout(() => {
+      if (mounted) setChecking(false);
+    }, 2000);
+
     fetch("/api/auth/me")
       .then((res) => res.json())
       .then((data) => {
+        if (!mounted) return;
+        clearTimeout(timeout);
         if (data.authenticated) {
           router.replace("/admin/dashboard");
         } else {
           setChecking(false);
         }
       })
-      .catch(() => setChecking(false));
+      .catch(() => {
+        if (mounted) {
+          clearTimeout(timeout);
+          setChecking(false);
+        }
+      });
+
+    return () => {
+      mounted = false;
+      clearTimeout(timeout);
+    };
   }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {

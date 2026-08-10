@@ -2,7 +2,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import io, { Socket } from "socket.io-client";
-import { CheckCircle2, Trash2, ExternalLink, Calendar, DollarSign, ShoppingBag, Clock, Sparkles } from "lucide-react";
+import { CheckCircle2, Trash2, ExternalLink, Calendar, DollarSign, ShoppingBag, Clock, Sparkles, Bell, Download, Volume2 } from "lucide-react";
+import { playOrderAlertChime } from "@/lib/audioNotification";
 
 /* ─── Types ─── */
 interface OrderItem { name: string; price: number; qty: number; }
@@ -35,30 +36,30 @@ const statusBadge = (s: string) => {
 };
 
 /* ─── Notification component ─── */
-function Notification({ order, onClose }: { order: Order; onClose: () => void }) {
+function OrderNotifCard({ order, onClose }: { order: Order; onClose: () => void }) {
   useEffect(() => {
-    const t = setTimeout(onClose, 8000);
+    const t = setTimeout(onClose, 10000);
     return () => clearTimeout(t);
   }, [onClose]);
 
   return (
-    <div className="animate-notif fixed top-6 right-6 z-[9999] w-80 card-dark border border-amber-500/50 p-5 rounded-2xl shadow-[0_0_30px_rgba(212,175,55,0.3)]">
+    <div className="animate-notif fixed top-6 right-6 z-[9999] w-80 sm:w-96 card-dark border-2 border-amber-400 p-5 rounded-2xl shadow-[0_0_40px_rgba(245,158,11,0.5)] bg-stone-900/95 backdrop-blur-md">
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <div className="w-3 h-3 bg-amber-400 rounded-full" />
-            <div className="absolute inset-0 animate-ping-gold w-3 h-3 bg-amber-400 rounded-full" />
+          <div className="relative flex items-center justify-center">
+            <span className="text-xl">🛎️</span>
+            <div className="absolute inset-0 animate-ping-gold rounded-full bg-amber-400/50" />
           </div>
-          <span className="text-amber-400 font-bold text-sm">🛎️ New Order Received!</span>
+          <span className="text-amber-400 font-extrabold text-base uppercase tracking-wider">Naya Order Aaya!</span>
         </div>
-        <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors text-lg leading-none">×</button>
+        <button onClick={onClose} className="text-stone-400 hover:text-white transition-colors text-xl font-bold leading-none px-1">×</button>
       </div>
-      <p className="text-white font-semibold">{order.customerName}</p>
-      <p className="text-gray-400 text-xs mt-1">📞 {order.phone}</p>
-      <p className="text-gray-400 text-xs">📍 {order.address}</p>
-      <div className="mt-2 pt-2 border-t border-white/5 flex justify-between items-center">
-        <span className="text-amber-400 font-bold text-lg">₹{order.totalAmount}</span>
-        <span className="text-gray-400 text-xs">{order.items.length} item(s)</span>
+      <p className="text-white font-bold text-lg">{order.customerName}</p>
+      <p className="text-stone-300 text-sm mt-1 flex items-center gap-1">📞 <span>{order.phone}</span></p>
+      <p className="text-stone-400 text-xs mt-0.5 flex items-start gap-1">📍 <span>{order.address}</span></p>
+      <div className="mt-3 pt-3 border-t border-amber-500/20 flex justify-between items-center bg-stone-850 p-2 rounded-xl">
+        <span className="text-amber-400 font-extrabold text-xl">₹{order.totalAmount}</span>
+        <span className="text-stone-300 text-xs font-medium bg-amber-500/10 px-2 py-1 rounded-lg border border-amber-500/30">{order.items.length} item(s)</span>
       </div>
     </div>
   );
@@ -73,25 +74,92 @@ export default function AdminDashboard() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [filter, setFilter]         = useState<string>("active");
+  const [notifPermission, setNotifPermission] = useState<string>("default");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const socketRef                   = useRef<Socket | null>(null);
-  const audioRef                    = useRef<HTMLAudioElement | null>(null);
+  const knownOrderIdsRef            = useRef<Set<string>>(new Set());
+  const isInitialLoadRef            = useRef<boolean>(true);
 
-  /* ── fetch all orders ── */
+  // Check notification permission on mount
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotifPermission(window.Notification.permission);
+    }
+  }, []);
+
+  // Listen for PWA beforeinstallprompt event
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+  }, []);
+
+  // Trigger New Order Notifications (Sound + Vibration + Web Push + Visual Card)
+  const triggerOrderNotification = useCallback((order: Order) => {
+    // 1. Play loud Web Audio chime
+    playOrderAlertChime();
+
+    // 2. Vibrate mobile phone
+    if (typeof window !== "undefined" && "vibrate" in navigator) {
+      navigator.vibrate([300, 100, 300, 100, 300]);
+    }
+
+    // 3. Show native system notification if permitted
+    if (typeof window !== "undefined" && "Notification" in window && window.Notification.permission === "granted") {
+      try {
+        new window.Notification(`🍕 Babli Bakery - Naya Order Received!`, {
+          body: `${order.customerName} - ₹${order.totalAmount} (${order.items.length} items)\n📍 ${order.address}`,
+          icon: "/icons/icon-192.svg",
+          tag: order._id,
+        });
+      } catch (e) {
+        console.warn("Notification error:", e);
+      }
+    }
+
+    // 4. In-App visual popup card
+    setNotif(order);
+  }, []);
+
+  /* ── fetch all orders with delta order detection ── */
   const fetchOrders = useCallback(async () => {
     try {
       const res = await fetch("/api/orders");
       if (res.status === 401) { router.push("/admin/login"); return; }
       const data = await res.json();
-      setOrders(data.orders || []);
+      const freshOrders: Order[] = data.orders || [];
+
+      // Detect brand new orders that arrived after initial load
+      if (!isInitialLoadRef.current) {
+        const brandNewOrders = freshOrders.filter((o) => !knownOrderIdsRef.current.has(o._id));
+        if (brandNewOrders.length > 0) {
+          // Alert for the latest order
+          triggerOrderNotification(brandNewOrders[0]);
+        }
+      } else {
+        isInitialLoadRef.current = false;
+      }
+
+      // Update known order IDs set
+      knownOrderIdsRef.current = new Set(freshOrders.map((o) => o._id));
+      setOrders(freshOrders);
     } catch { /* silently handle */ }
     finally { setLoading(false); }
-  }, [router]);
+  }, [router, triggerOrderNotification]);
 
+  // Initial fetch and 4-second continuous polling for real-time order alerts
   useEffect(() => {
     fetchOrders();
+    const interval = setInterval(fetchOrders, 4000);
+    return () => clearInterval(interval);
   }, [fetchOrders]);
 
-  /* ── socket.io connection ── */
+  /* ── socket.io connection fallback ── */
   useEffect(() => {
     const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL;
     if (!SOCKET_URL) return;
@@ -100,15 +168,11 @@ export default function AdminDashboard() {
     socketRef.current = socket;
 
     socket.on("new-order", (order: Order) => {
-      setOrders((prev) => [order, ...prev]);
-      setNotif(order);
-      /* Play sound */
-      try {
-        if (!audioRef.current) {
-          audioRef.current = new Audio("/sounds/notification.mp3");
-        }
-        audioRef.current.play().catch(() => {});
-      } catch { /* ignore audio errors */ }
+      if (!knownOrderIdsRef.current.has(order._id)) {
+        knownOrderIdsRef.current.add(order._id);
+        setOrders((prev) => [order, ...prev]);
+        triggerOrderNotification(order);
+      }
     });
 
     socket.on("order-updated", (updated: Order) => {
@@ -120,7 +184,37 @@ export default function AdminDashboard() {
     });
 
     return () => { socket.disconnect(); };
-  }, []);
+  }, [triggerOrderNotification]);
+
+  // Request Notification permission & test sound
+  const enableNotificationsAndSound = async () => {
+    playOrderAlertChime();
+    if (typeof window !== "undefined" && "Notification" in window) {
+      const res = await window.Notification.requestPermission();
+      setNotifPermission(res);
+      if (res === "granted") {
+        new window.Notification("✅ Notifications Enabled!", {
+          body: "Aapko har naye order par loud chime sound aur notification milega.",
+          icon: "/icons/icon-192.svg",
+        });
+      }
+    }
+  };
+
+
+  // Trigger PWA installation prompt
+  const installPwaApp = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const choiceResult = await deferredPrompt.userChoice;
+      if (choiceResult.outcome === "accepted") {
+        setDeferredPrompt(null);
+      }
+    } else {
+      alert("📱 App Download karne ke liye:\n\nAndroid/Chrome: Browser menu (3 dots) par tap karke 'Add to Home Screen' chuney.\n\niPhone/Safari: Share icon par tap karke 'Add to Home Screen' chuney.");
+    }
+  };
+
 
   /* ── update order status ── */
   const updateStatus = async (orderId: string, newStatus: string) => {
@@ -208,29 +302,53 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-stone-950 text-stone-100 pt-0 font-sans">
       {/* Notification */}
       {notification && (
-        <Notification order={notification} onClose={() => setNotif(null)} />
+        <OrderNotifCard order={notification} onClose={() => setNotif(null)} />
       )}
 
       {/* Admin Header */}
-      <header className="bg-stone-900 border-b border-amber-500/20 px-6 py-4 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
+      <header className="bg-stone-900 border-b border-amber-500/20 px-4 sm:px-6 py-4 sticky top-0 z-40 shadow-xl">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
             <div className="font-serif font-bold text-xl text-amber-400 flex items-center gap-2">
-              <Sparkles size={18} /> Babli Bakery
+              <Sparkles size={18} /> Babli Bakery Admin
             </div>
-            <span className="text-stone-700">|</span>
-            <span className="text-stone-400 text-sm">Owner Control Panel</span>
+            <span className="hidden sm:inline text-stone-700">|</span>
+            <span className="hidden sm:inline text-stone-400 text-sm">Owner Control Panel</span>
           </div>
-          <div className="flex items-center gap-4">
-            <a href="/admin/reviews" className="text-stone-300 hover:text-amber-400 transition-colors text-sm font-medium">
-              📝 Customer Reviews
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Install App Button */}
+            <button
+              onClick={installPwaApp}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-stone-950 font-bold text-xs shadow-md transition-transform active:scale-95"
+            >
+              <Download size={14} />
+              <span>📱 Install App</span>
+            </button>
+
+            {/* Notification & Sound Enable Button */}
+            <button
+              onClick={enableNotificationsAndSound}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors ${
+                notifPermission === "granted"
+                  ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/20"
+                  : "bg-amber-500/10 border-amber-500/40 text-amber-400 hover:bg-amber-500/20"
+              }`}
+            >
+              {notifPermission === "granted" ? <Volume2 size={14} /> : <Bell size={14} />}
+              <span>{notifPermission === "granted" ? "🔊 Sound On" : "🔔 Enable Sound"}</span>
+            </button>
+
+            <a href="/admin/reviews" className="text-stone-300 hover:text-amber-400 transition-colors text-xs font-medium px-2 py-1">
+              📝 Reviews
             </a>
-            <button onClick={logout} className="text-xs px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 transition-colors">
+            <button onClick={logout} className="text-xs px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700 transition-colors">
               Logout
             </button>
           </div>
         </div>
       </header>
+
 
       <div className="max-w-7xl mx-auto px-4 py-8">
         
